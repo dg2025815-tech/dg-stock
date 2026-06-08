@@ -5,19 +5,26 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 
 # 페이지 설정
-st.set_page_config(page_title="AI Stock Recommendation Dashboard", layout="wide")
+st.set_page_config(page_title="AI Stock Insight", layout="wide")
 
-# --- AI 추천 알고리즘 함수 ---
-def analyze_stock(ticker):
+# --- AI 분석 엔진 ---
+def get_ai_analysis(ticker):
     try:
-        # 최근 1년치 데이터 다운로드
+        # 데이터 가져오기 (최근 1년)
         df = yf.download(ticker, period="1y", interval="1d", progress=False)
-        if df.empty: return None
+        
+        if df.empty:
+            return None
+        
+        # 최신 yfinance 버전의 MultiIndex 문제 해결
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
-        # 1. 이동평균선 (MA)
+        # 기술적 지표 계산
+        # 1. 이동평균선
         df['MA20'] = df['Close'].rolling(window=20).mean()
         df['MA60'] = df['Close'].rolling(window=60).mean()
-
+        
         # 2. RSI (상대강도지수)
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
@@ -25,68 +32,97 @@ def analyze_stock(ticker):
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
 
-        # 3. 볼린저 밴드
-        df['StdDev'] = df['Close'].rolling(window=20).std()
-        df['Upper'] = df['MA20'] + (df['StdDev'] * 2)
-        df['Lower'] = df['MA20'] - (df['StdDev'] * 2)
-
-        # --- 스코어링 로직 (AI 가중치 모델) ---
+        # 3. 점수 계산 로직
         last = df.iloc[-1]
-        score = 50  # 기본 점수
+        score = 50 # 기본점수
         
-        # 조건 1: RSI (과매도 시 가점, 과매수 시 감점)
-        if last['RSI'] < 30: score += 20  # 과매도 (매수 기회)
-        elif last['RSI'] > 70: score -= 15 # 과매수 (경계)
-        
-        # 조건 2: 이동평균선 (정배열 가점)
+        # 추세 분석
         if last['Close'] > last['MA20']: score += 15
         if last['MA20'] > last['MA60']: score += 15
         
-        # 조건 3: 볼린저 밴드 (하단 터치 시 가점)
-        if last['Close'] <= last['Lower']: score += 10
+        # 과매수/과매도 분석
+        if last['RSI'] < 35: score += 20 # 과매도 (매수기회)
+        elif last['RSI'] > 70: score -= 15 # 과매수 (위험)
+        
+        # 거래량 분석
+        avg_vol = df['Volume'].tail(20).mean()
+        if last['Volume'] > avg_vol * 1.5: score += 10
 
-        # 최종 의견
-        if score >= 75: advice = "🔥 강력 매수"
-        elif score >= 60: advice = "✅ 매수 검토"
-        elif score >= 40: advice = "⚖️ 보유/관망"
-        else: advice = "❄️ 매도/주의"
-
+        # 결과 정리
+        if score >= 75: status, color = "🔥 강력 매수 추천", "red"
+        elif score >= 60: status, color = "✅ 매수 검토", "green"
+        elif score >= 40: status, color = "⚖️ 보유 및 관망", "orange"
+        else: status, color = "❄️ 매수 비추천", "blue"
+        
         return {
             "ticker": ticker,
-            "current_price": last['Close'],
+            "price": last['Close'],
             "score": min(score, 100),
-            "advice": advice,
-            "rsi": last['RSI'],
+            "status": status,
+            "color": color,
             "df": df
         }
-    except:
+    except Exception as e:
         return None
 
 # --- UI 레이아웃 ---
-st.title("🤖 AI 종목 추천 알고리즘 대시보드")
-st.markdown(f"**기준일자:** {datetime.now().strftime('%Y-%m-%d')} | 기술적 지표를 기반으로 AI가 점수를 산출합니다.")
+st.title("🤖 AI 주식 추천 분석 대시보드")
+st.markdown("전 세계 주식 데이터를 실시간 분석하여 AI 투자 점수를 산출합니다.")
 
-# 사이드바 설정
-st.sidebar.header("🔍 분석 대상 설정")
-default_tickers = "AAPL, TSLA, NVDA, 005930.KS, 000660.KS, 035420.KS"
-input_tickers = st.sidebar.text_input("티커 입력 (쉼표 구분)", default_tickers)
-tickers = [t.strip().upper() for t in input_tickers.split(",")]
+# 사이드바
+st.sidebar.header("🔍 분석 설정")
+raw_tickers = st.sidebar.text_input("티커 입력 (쉼표 구분)", "NVDA, TSLA, AAPL, 005930.KS, 000660.KS")
+tickers = [t.strip().upper() for t in raw_tickers.split(",")]
 
-# 데이터 분석 실행
-results = []
-with st.spinner('AI가 데이터를 분석 중입니다...'):
+if tickers:
+    analysis_results = []
+    
+    # 데이터 분석 실행
     for t in tickers:
-        res = analyze_stock(t)
-        if res: results.append(res)
+        with st.spinner(f'{t} 분석 중...'):
+            res = get_ai_analysis(t)
+            if res:
+                analysis_results.append(res)
+    
+    if analysis_results:
+        # 1. 요약 카드 (상단)
+        cols = st.columns(len(analysis_results))
+        for i, res in enumerate(analysis_results):
+            with cols[i]:
+                st.markdown(f"### {res['ticker']}")
+                st.markdown(f"**{res['score']}점**")
+                st.caption(res['status'])
+                st.progress(res['score'] / 100)
 
-if results:
-    # 1. 종합 순위 섹션
-    st.subheader("🏆 AI 추천 종목 순위")
-    summary_df = pd.DataFrame([{
-        "순위": i+1,
-        "종목": r['ticker'],
-        "AI 점수": r['score'],
-        "투자 의견": r['advice'],
-        "현재가": f"{r['current_price']:,.2f}",
-        "RSI": f"{r['rsi']:.1f}"
-    } for i, r in enumerate(sorted(results, key=lambda x: x['
+        # 2. 추천 순위표
+        st.divider()
+        st.subheader("🏆 AI 추천 우선순위")
+        summary_df = pd.DataFrame([{
+            "종목": r['ticker'],
+            "AI 점수": r['score'],
+            "현재가": f"{r['price']:,.2f}",
+            "투자 의견": r['status']
+        } for r in sorted(analysis_results, key=lambda x: x['score'], reverse=True)])
+        st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+        # 3. 상세 차트 (탭 방식)
+        st.divider()
+        st.subheader("📈 상세 기술적 분석")
+        tabs = st.tabs([r['ticker'] for r in analysis_results])
+        
+        for i, tab in enumerate(tabs):
+            with tab:
+                r = analysis_results[i]
+                df_plot = r['df'].tail(120) # 최근 120일
+                
+                fig = go.Figure()
+                # 주가 캔들
+                fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['Close'], name="주가", line=dict(color='black', width=2)))
+                # 이평선
+                fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA20'], name="20일선", line=dict(dash='dot')))
+                fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot['MA60'], name="60일선", line=dict(dash='dot')))
+                
+                fig.update_layout(template="plotly_white", height=400, margin=dict(l=10, r=10, t=10, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.error("데이터를 가져오지 못했습니다. 티커 형식을 확인해 주세요 (예: AAPL, 005930.KS)")
